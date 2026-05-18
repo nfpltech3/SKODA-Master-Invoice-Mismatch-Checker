@@ -15,11 +15,19 @@ from pathlib import Path
 # ═══════════════════════════════════════════════════════════════
 # LOGGING SETUP
 # ═══════════════════════════════════════════════════════════════
+from logging.handlers import RotatingFileHandler
+
+VERBOSE_LOG = False
+
 _LOG_FILE = Path(__file__).parent / "mismatch_checker.log" if not getattr(sys, 'frozen', False) else Path(sys.executable).parent / "mismatch_checker.log"
+
+_formatter = logging.Formatter('%(asctime)s | %(levelname)-7s | %(message)s')
+_fh = RotatingFileHandler(_LOG_FILE, maxBytes=5*1024*1024, backupCount=3, encoding='utf-8')
+_fh.setFormatter(_formatter)
+
 logging.basicConfig(
-    level=logging.DEBUG,
-    format='%(asctime)s | %(levelname)-7s | %(message)s',
-    handlers=[logging.FileHandler(_LOG_FILE, encoding='utf-8'), logging.StreamHandler()]
+    level=logging.DEBUG if VERBOSE_LOG else logging.INFO,
+    handlers=[_fh]
 )
 logger = logging.getLogger(__name__)
 
@@ -144,11 +152,18 @@ def perform_comparison(master_path: str, item_path: str, ext_path: str, status_c
     if status_callback: status_callback("Loading Excel files...")
     logger.info("Starting comparison...")
     logger.info("Master: %s | Item: %s | Invoice: %s", master_path, item_path, ext_path)
-    try: df_master = pd.read_excel(master_path, sheet_name="Master Sheet", dtype=str)
+    try: 
+        df_master = pd.read_excel(master_path, sheet_name="Master Sheet", dtype=str)
+        logger.info("Master Sheet loaded | Shape: %s | Cols: %s | First 3 PartNo: %s", df_master.shape, list(df_master.columns), df_master.get('PartNo', pd.Series(dtype=str)).head(3).tolist())
     except Exception as e: logger.error("Master Sheet load failed: %s", e); raise
-    try: df_item = pd.read_excel(item_path, sheet_name="Sheet1")
+    try: 
+        df_item = pd.read_excel(item_path, sheet_name="Sheet1")
+        logger.info("Item Report loaded | Shape: %s | Cols: %s | First 3 Model: %s", df_item.shape, list(df_item.columns), df_item.get('Model', pd.Series(dtype=str)).head(3).tolist())
     except Exception as e: logger.error("Item Report load failed: %s", e); raise
-    try: df_ext = pd.read_excel(ext_path, sheet_name="Sheet1")
+    try: 
+        df_ext = pd.read_excel(ext_path, sheet_name="Sheet1")
+        ext_key_col = 'Mat. NO.' if 'Mat. NO.' in df_ext.columns else 'Part Number' if 'Part Number' in df_ext.columns else df_ext.columns[0]
+        logger.info("Extracted Invoice loaded | Shape: %s | Cols: %s | First 3 %s: %s", df_ext.shape, list(df_ext.columns), ext_key_col, df_ext.get(ext_key_col, pd.Series(dtype=str)).head(3).tolist())
     except Exception as e: logger.error("Extracted Invoice load failed: %s", e); raise
 
     # ── Column aliasing for alternate invoice formats ──
@@ -166,10 +181,16 @@ def perform_comparison(master_path: str, item_path: str, ext_path: str, status_c
         'HS-CODE': 'HS Code',
         'Invoice No': 'Invoice Number',
     }
+    unmatched_aliases = []
     for alt, canonical in ext_aliases.items():
         if alt in df_ext.columns and canonical not in df_ext.columns:
             df_ext.rename(columns={alt: canonical}, inplace=True)
             logger.info("Aliased Extracted Invoice column '%s' -> '%s'", alt, canonical)
+        elif alt not in df_ext.columns:
+            # Alt name not present in file at all — truly unmatched
+            unmatched_aliases.append(alt)
+        # If canonical already exists, alias is irrelevant — no need to log
+    logger.info("Column aliases attempted but did not match: %s", unmatched_aliases)
 
     master_req = ['PartNo', 'CTH1', 'Basic Duty Rate', 'IGST Notn Sr No']
     item_req = ['Job No','Job Date','Invoice No','Invoice Date','Model','Product Desc','CTH','Quantity','Amount','Country of Origin','Basic Duty Rate','IGST Notification SrNo']
@@ -187,17 +208,27 @@ def perform_comparison(master_path: str, item_path: str, ext_path: str, status_c
 
     # Filter out summary/blank rows from Extracted Invoice
     # Rows where Mat. NO. is blank are summary lines (e.g. "Total Unique Packages: 113")
-    before_filter = len(df_ext)
+    before_filter_df = df_ext.copy()
     df_ext = df_ext.dropna(subset=['Mat. NO.'])
     df_ext = df_ext[df_ext['Mat. NO.'].astype(str).str.strip() != '']
-    dropped = before_filter - len(df_ext)
+    dropped = len(before_filter_df) - len(df_ext)
     if dropped > 0:
-        logger.info("Filtered %d summary/blank rows from Extracted Invoice", dropped)
+        dropped_df = before_filter_df[~before_filter_df.index.isin(df_ext.index)]
+        first_3_dropped = dropped_df['Mat. NO.'].head(3).tolist()
+        logger.info("Filtered %d summary/blank rows from Extracted Invoice. First 3 dropped Mat. NO.: %s", dropped, first_3_dropped)
 
     # Normalize match keys
     df_master['match_key'] = df_master['PartNo'].apply(normalize_part_number)
     df_item['match_key'] = df_item['Model'].apply(normalize_part_number)
     df_ext['match_key'] = df_ext['Mat. NO.'].apply(normalize_part_number)
+
+    mk_master = set(df_master['match_key'].unique())
+    mk_item = set(df_item['match_key'].unique())
+    mk_ext = set(df_ext['match_key'].unique())
+    logger.info("Match Keys Unique Counts - Master: %d, Item: %d, Extracted: %d", len(mk_master), len(mk_item), len(mk_ext))
+    logger.info("Match Keys ONLY in Item Report (max 20): %s", list(mk_item - mk_ext)[:20])
+    logger.info("Match Keys ONLY in Extracted Invoice (max 20): %s", list(mk_ext - mk_item)[:20])
+    logger.info("Match Keys missing from BOTH Invoice and Master (max 20): %s", list(mk_item - mk_ext - mk_master)[:20])
 
     # Master dedup & conflict detection
     master_conflicts = set()
@@ -218,11 +249,24 @@ def perform_comparison(master_path: str, item_path: str, ext_path: str, status_c
     logger.info("Merging Item Report (%d) with Extracted Invoice (%d)...", len(df_item), len(df_ext))
     merged = pd.merge(df_item, df_ext, on=['match_key','occurrence'], how='outer', suffixes=('_item','_ext'), indicator=True)
     logger.debug("Merged columns: %s", list(merged.columns))
+    
+    merge_counts = merged['_merge'].value_counts().to_dict()
+    logger.info("Merge distribution (_merge counts): %s", merge_counts)
+    
+    item_dupes = df_item[df_item['occurrence'] > 0]['match_key'].unique()
+    ext_dupes = df_ext[df_ext['occurrence'] > 0]['match_key'].unique()
+    if len(item_dupes) > 0:
+        logger.info("Duplicate match keys in Item Report (max 20): %s", list(item_dupes)[:20])
+    if len(ext_dupes) > 0:
+        logger.info("Duplicate match keys in Extracted Invoice (max 20): %s", list(ext_dupes)[:20])
+        
     merged_full = pd.merge(merged, df_master_unique, on='match_key', how='left')
 
     mismatches: list[dict] = []
+    cth_alerts: list[dict] = []
 
-    def add(rd, field, m_val, e_val, i_val, remark, status="MISMATCH", sub_row=False):
+    def add(rd, field, m_val, e_val, i_val, remark, status="MISMATCH", sub_row=False, target_list=None):
+        if target_list is None: target_list = mismatches
         def clean_inv(v):
             if pd.isna(v) or v == "": return ""
             s = str(v).strip()
@@ -242,7 +286,7 @@ def perform_comparison(master_path: str, item_path: str, ext_path: str, status_c
         if not sub_row:
             if pd.isna(rec['Invoice No']) or rec['Invoice No'] == '': rec['Invoice No'] = clean_inv(rd.get('Invoice Number',''))
             if pd.isna(rec['Invoice Date']) or rec['Invoice Date'] == '': rec['Invoice Date'] = normalize_date(rd.get('Invoice Date_ext',''))
-        mismatches.append(rec)
+        target_list.append(rec)
 
     for _, row in merged_full.iterrows():
         ms = row['_merge']
@@ -336,18 +380,22 @@ def perform_comparison(master_path: str, item_path: str, ext_path: str, status_c
             if mc.endswith('.0'): mc = mc[:-2]
             if ic.endswith('.0'): ic = ic[:-2]
             if mc != ic and mc != 'nan' and ic != 'nan':
+                logger.debug("Mismatch [CTH] key: %s | Raw Master: %r, Item: %r | Norm Master: %r, Item: %r", mk, row.get('CTH1',''), row.get('CTH',''), mc, ic)
                 add(row, 'CTH', row.get('CTH1',''), '', row.get('CTH',''), 'CTH mismatch between Master Sheet and Item Report')
 
             # Basic Duty Rate — after outer merge Item's col stays as 'Basic Duty Rate',
             # after left-joining Master which also has 'Basic Duty Rate', pandas adds _x/_y
             m_bdr = row.get('Basic Duty Rate_y', ''); i_bdr = row.get('Basic Duty Rate_x', '')
-            if normalize_number(m_bdr) != normalize_number(i_bdr) and not (normalize_number(m_bdr) is None and normalize_number(i_bdr) is None):
+            norm_m_bdr = normalize_number(m_bdr); norm_i_bdr = normalize_number(i_bdr)
+            if norm_m_bdr != norm_i_bdr and not (norm_m_bdr is None and norm_i_bdr is None):
+                logger.debug("Mismatch [Basic Duty Rate] key: %s | Raw Master: %r, Item: %r | Norm Master: %r, Item: %r", mk, m_bdr, i_bdr, norm_m_bdr, norm_i_bdr)
                 add(row, 'Basic Duty Rate', m_bdr, '', i_bdr, 'Basic Duty Rate mismatch between Master Sheet & Item Report')
 
             mi = str(row.get('IGST Notn Sr No','')).strip(); ii = str(row.get('IGST Notification SrNo','')).strip()
             if mi.endswith('.0'): mi = mi[:-2]
             if ii.endswith('.0'): ii = ii[:-2]
             if mi != ii and mi != 'nan' and ii != 'nan':
+                logger.debug("Mismatch [IGST Notification SrNo] key: %s | Raw Master: %r, Item: %r | Norm Master: %r, Item: %r", mk, row.get('IGST Notn Sr No',''), row.get('IGST Notification SrNo',''), mi, ii)
                 add(row, 'IGST Notification SrNo', row.get('IGST Notn Sr No',''), '', row.get('IGST Notification SrNo',''), 'IGST Notification SrNo mismatch between Master Sheet & Item Report')
 
             # Part Suffix (Master) vs Generic Description (Item Report)
@@ -355,6 +403,7 @@ def perform_comparison(master_path: str, item_path: str, ext_path: str, status_c
             i_generic = str(row.get('Generic Description', '')).strip()
             if m_suffix and i_generic and m_suffix != 'nan' and i_generic != 'nan':
                 if m_suffix.upper() != i_generic.upper():
+                    logger.debug("Mismatch [Generic Description] key: %s | Raw Master: %r, Item: %r | Norm Master: %r, Item: %r", mk, row.get('Part Suffix', ''), row.get('Generic Description', ''), m_suffix.upper(), i_generic.upper())
                     add(row, 'Generic Description', m_suffix, '', i_generic, 'Gen. Desc. does not match in Item Report & Master Sheet.')
 
         # Invoice-level comparisons (only when both sides present)
@@ -371,18 +420,70 @@ def perform_comparison(master_path: str, item_path: str, ext_path: str, status_c
             e_desc_norm = normalize_description(ext_desc_raw, model=model_val)
             i_desc_norm = normalize_description(item_desc_raw, model=model_val, generic_desc=generic_desc_val)
             if e_desc_norm != i_desc_norm:
+                logger.debug("Mismatch [Description] key: %s | Raw Ext: %r, Item: %r | Norm Ext: %r, Item: %r", mk, ext_desc_raw, item_desc_raw, e_desc_norm, i_desc_norm)
                 add(row, 'Description', master_desc_raw, ext_desc_raw, item_desc_raw, 'Description mismatch')
-            if normalize_invoice_number(row.get('Invoice Number','')) != normalize_invoice_number(row.get('Invoice No','')):
-                add(row, 'Invoice Number', '', row.get('Invoice Number',''), row.get('Invoice No',''), 'Invoice Number mismatch')
-            if normalize_date(row.get('Invoice Date_ext','')) != normalize_date(row.get('Invoice Date_item','')):
-                add(row, 'Invoice Date', '', row.get('Invoice Date_ext',''), row.get('Invoice Date_item',''), 'Invoice Date mismatch')
-            if normalize_country(row.get('Country of Origin_ext','')) != normalize_country(row.get('Country of Origin_item','')):
-                add(row, 'Country of Origin', '', row.get('Country of Origin_ext',''), row.get('Country of Origin_item',''), 'Country of Origin mismatch')
-            if normalize_number(row.get('Quantity_ext','')) != normalize_number(row.get('Quantity_item','')):
-                add(row, 'Quantity', '', row.get('Quantity_ext',''), row.get('Quantity_item',''), 'Quantity mismatch')
-            if normalize_number(row.get('Total Price','')) != normalize_number(row.get('Amount','')):
-                add(row, 'Amount', '', row.get('Total Price',''), row.get('Amount',''), 'Amount & Total Price mismatch')
+            
+            raw_ext_inv = row.get('Invoice Number','')
+            raw_item_inv = row.get('Invoice No','')
+            norm_ext_inv = normalize_invoice_number(raw_ext_inv)
+            norm_item_inv = normalize_invoice_number(raw_item_inv)
+            if norm_ext_inv != norm_item_inv:
+                logger.debug("Mismatch [Invoice Number] key: %s | Raw Ext: %r, Item: %r | Norm Ext: %r, Item: %r", mk, raw_ext_inv, raw_item_inv, norm_ext_inv, norm_item_inv)
+                add(row, 'Invoice Number', '', raw_ext_inv, raw_item_inv, 'Invoice Number mismatch')
+            
+            raw_ext_date = row.get('Invoice Date_ext','')
+            raw_item_date = row.get('Invoice Date_item','')
+            norm_ext_date = normalize_date(raw_ext_date)
+            norm_item_date = normalize_date(raw_item_date)
+            if norm_ext_date != norm_item_date:
+                logger.debug("Mismatch [Invoice Date] key: %s | Raw Ext: %r, Item: %r | Norm Ext: %r, Item: %r", mk, raw_ext_date, raw_item_date, norm_ext_date, norm_item_date)
+                add(row, 'Invoice Date', '', raw_ext_date, raw_item_date, 'Invoice Date mismatch')
+            
+            raw_ext_coo = row.get('Country of Origin_ext','')
+            raw_item_coo = row.get('Country of Origin_item','')
+            norm_ext_coo = normalize_country(raw_ext_coo)
+            norm_item_coo = normalize_country(raw_item_coo)
+            if norm_ext_coo != norm_item_coo:
+                logger.debug("Mismatch [Country of Origin] key: %s | Raw Ext: %r, Item: %r | Norm Ext: %r, Item: %r", mk, raw_ext_coo, raw_item_coo, norm_ext_coo, norm_item_coo)
+                add(row, 'Country of Origin', '', raw_ext_coo, raw_item_coo, 'Country of Origin mismatch')
+            
+            raw_ext_qty = row.get('Quantity_ext','')
+            raw_item_qty = row.get('Quantity_item','')
+            norm_ext_qty = normalize_number(raw_ext_qty)
+            norm_item_qty = normalize_number(raw_item_qty)
+            if norm_ext_qty != norm_item_qty:
+                logger.debug("Mismatch [Quantity] key: %s | Raw Ext: %r, Item: %r | Norm Ext: %r, Item: %r", mk, raw_ext_qty, raw_item_qty, norm_ext_qty, norm_item_qty)
+                add(row, 'Quantity', '', raw_ext_qty, raw_item_qty, 'Quantity mismatch')
+            
+            raw_ext_amt = row.get('Total Price','')
+            raw_item_amt = row.get('Amount','')
+            norm_ext_amt = normalize_number(raw_ext_amt)
+            norm_item_amt = normalize_number(raw_item_amt)
+            if norm_ext_amt != norm_item_amt:
+                logger.debug("Mismatch [Amount] key: %s | Raw Ext: %r, Item: %r | Norm Ext: %r, Item: %r", mk, raw_ext_amt, raw_item_amt, norm_ext_amt, norm_item_amt)
+                add(row, 'Amount', '', raw_ext_amt, raw_item_amt, 'Amount & Total Price mismatch')
 
+        # Check for CTH Alerts
+        if ms in ('both', 'left_only'):
+            item_cth = str(row.get('CTH', '')).strip()
+            if item_cth.endswith('.0'):
+                item_cth = item_cth[:-2]
+            
+            target_prefixes = ('74', '76', '40111010', '85261000', '9401')
+            if any(item_cth.startswith(prefix) for prefix in target_prefixes):
+                add(
+                    row,
+                    field='CTH Alert',
+                    m_val='',
+                    e_val='',
+                    i_val=item_cth,
+                    remark='CTH Code Detected',
+                    status='CTH_ALERT',
+                    sub_row=False,
+                    target_list=cth_alerts
+                )
+
+    mismatches.extend(cth_alerts)
     logger.info("Comparison complete. %d mismatch(es) found.", len(mismatches))
     
     # Calculate summary counts using the merge indicator directly.
@@ -410,10 +511,12 @@ def export_to_excel(df_out: pd.DataFrame, save_path: str) -> None:
     from openpyxl.styles import Alignment
     df_exp = df_out.copy()
     
-    statuses = df_exp['Status'].tolist() if 'Status' in df_exp.columns else []
-
     if 'Status' in df_exp.columns:
+        df_exp = df_exp[df_exp['Status'] != 'CTH_ALERT']
+        statuses = df_exp['Status'].tolist()
         df_exp = df_exp.drop(columns=['Status'])
+    else:
+        statuses = []
 
     wb = Workbook(); ws = wb.active; ws.title = "Mismatch Report"
     hdr_fill = PatternFill(start_color='1F3F6E', end_color='1F3F6E', fill_type='solid')
@@ -620,9 +723,18 @@ class Application:
                 self._set_status("All matched — 0 mismatches", "#2E7D32")
                 self._clear_table()
             else:
-                n = len(self.df_result)
-                self._show_summary(f"{summary_msg} | ⚠ {n} mismatch(es) found.", "#FFF8E1", "#F57F17")
-                self._set_status(f"{n} mismatches found", _ACCENT_RED)
+                if 'Status' in self.df_result.columns:
+                    mismatch_count = len(self.df_result[self.df_result['Status'] != 'CTH_ALERT'])
+                else:
+                    mismatch_count = len(self.df_result)
+                
+                if mismatch_count == 0:
+                    self._show_summary(f"{summary_msg}. No mismatches found!", "#E8F5E9", "#2E7D32")
+                    self._set_status("All matched — 0 mismatches", "#2E7D32")
+                else:
+                    self._show_summary(f"{summary_msg} | ⚠ {mismatch_count} mismatch(es) found.", "#FFF8E1", "#F57F17")
+                    self._set_status(f"{mismatch_count} mismatch(es) found", _ACCENT_RED)
+                
                 self._render_table()
                 self.btn_export.configure(state=tk.NORMAL)
         except Exception as e:
@@ -694,11 +806,14 @@ class Application:
         for idx, (_, row) in enumerate(df.iterrows()):
             vals = [str(row[c]) if pd.notnull(row[c]) else "" for c in display_cols]
             status = str(row.get('Status', '')).upper().strip()
-            tag = "info" if status == "INFO" else "mismatch"
+            if status == "INFO": tag = "info"
+            elif status == "CTH_ALERT": tag = "cth_alert"
+            else: tag = "mismatch"
             tree.insert("", tk.END, values=vals, tags=(tag,))
 
         tree.tag_configure("mismatch", background="#FFEBEE")
         tree.tag_configure("info", background="#FFFFFF")
+        tree.tag_configure("cth_alert", background="#FFFFFF", font=("Segoe UI", 10, "bold"))
 
         # Bind double-click for editing
         tree.bind("<Double-1>", self._on_double_click_cell)
@@ -757,6 +872,9 @@ class Application:
     def _export(self) -> None:
         if self.df_result is None or self.df_result.empty:
             messagebox.showinfo("Info", "No mismatches to export."); return
+        if 'Status' in self.df_result.columns and len(self.df_result[self.df_result['Status'] != 'CTH_ALERT']) == 0:
+            messagebox.showinfo("Info", "Only CTH Alerts are present. No mismatches to export.")
+            return
         timestamp = datetime.now().strftime("%Y%m%d_%H%M%S")
         save_path = filedialog.asksaveasfilename(title="Save Mismatch Report", defaultextension=".xlsx",
                                                   initialfile=f"comparison_mismatch_report_{timestamp}.xlsx",

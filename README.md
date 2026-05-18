@@ -1,4 +1,9 @@
-# SKODA Item Mismatch Checker
+# SKODA Item Mismatch Checker v2
+
+## What's New in v2 (Updated 2026-05-19)
+- **Advanced Diagnostic Logging**: Implemented real-time, comprehensive logging with file rotation (max 5MB) to safely record file fingerprints, match key distributions, and detailed per-field mismatch tracebacks.
+- **Column Alias & Filtering Audit**: Added tracking for unmatched invoice column aliases and explicit logging of dropped summary/blank rows for greater data integrity.
+- **Toggleable Verbose Mode**: Added a `VERBOSE_LOG` flag to instantly switch from standard execution logging to detailed trace debugging without console clutter.
 
 ## Overview
 The **SKODA Item Mismatch Checker** is a Python-based desktop application (built with `tkinter` and `pandas`) designed to automate the reconciliation of customs and invoice data for Nagarkot Forwarders Pvt. Ltd. 
