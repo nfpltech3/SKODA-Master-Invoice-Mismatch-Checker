@@ -1,10 +1,5 @@
 # SKODA Item Mismatch Checker v2
 
-## What's New in v2 (Updated 2026-05-19)
-- **Advanced Diagnostic Logging**: Implemented real-time, comprehensive logging with file rotation (max 5MB) to safely record file fingerprints, match key distributions, and detailed per-field mismatch tracebacks.
-- **Column Alias & Filtering Audit**: Added tracking for unmatched invoice column aliases and explicit logging of dropped summary/blank rows for greater data integrity.
-- **Toggleable Verbose Mode**: Added a `VERBOSE_LOG` flag to instantly switch from standard execution logging to detailed trace debugging without console clutter.
-
 ## Overview
 The **SKODA Item Mismatch Checker** is a Python-based desktop application (built with `tkinter` and `pandas`) designed to automate the reconciliation of customs and invoice data for Nagarkot Forwarders Pvt. Ltd. 
 
@@ -82,7 +77,9 @@ pyinstaller Skoda_Mismatch_Checker.spec
 3. Locate Executable:
 The application will be generated in the `dist/` folder.
 
-## Recent Updates
-- Added mapping support for Volkswagen AG / Audi AG invoice headers (`Part No.`, `Country Code`).
-- Added mapping support for Premium Sound Solutions invoice headers (`Article No`, `Qty`, `Amount`, `Invoice No`).
-- Refined country normalization logic (e.g., explicitly aliasing `TAIWAN, PROVINCE OF CHINA` to `TAIWAN`).
+## Version History
+
+| Version | Release Date | Key Enhancements & Features |
+| :---: | :---: | :--- |
+| **v2.0** | 2026-05-19 | **Advanced Logging:** Real-time log rotation (5MB cap) for file fingerprints and per-field match tracebacks.<br>**Audit Trails:** Added tracking for unmatched column aliases and dropped blank rows.<br>**Verbose Mode:** Added `VERBOSE_LOG` constant for deep trace debugging. |
+| **v1.1** | 2026-05-16 | **Format Support:** Added header mapping for VW/Audi and Premium Sound Solutions invoices.<br>**Data Normalization:** Refined country extraction logic (e.g., Taiwan aliases). |
