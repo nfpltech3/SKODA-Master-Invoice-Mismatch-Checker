@@ -157,11 +157,13 @@ def perform_comparison(master_path: str, item_path: str, ext_path: str, status_c
         logger.info("Master Sheet loaded | Shape: %s | Cols: %s | First 3 PartNo: %s", df_master.shape, list(df_master.columns), df_master.get('PartNo', pd.Series(dtype=str)).head(3).tolist())
     except Exception as e: logger.error("Master Sheet load failed: %s", e); raise
     try: 
-        df_item = pd.read_excel(item_path, sheet_name="Sheet1")
+        df_item = pd.read_excel(item_path, sheet_name=0)
+        df_item['excel_row_item'] = df_item.index + 2
         logger.info("Item Report loaded | Shape: %s | Cols: %s | First 3 Model: %s", df_item.shape, list(df_item.columns), df_item.get('Model', pd.Series(dtype=str)).head(3).tolist())
     except Exception as e: logger.error("Item Report load failed: %s", e); raise
     try: 
-        df_ext = pd.read_excel(ext_path, sheet_name="Sheet1")
+        df_ext = pd.read_excel(ext_path, sheet_name=0)
+        df_ext['excel_row_ext'] = df_ext.index + 2
         ext_key_col = 'Mat. NO.' if 'Mat. NO.' in df_ext.columns else 'Part Number' if 'Part Number' in df_ext.columns else df_ext.columns[0]
         logger.info("Extracted Invoice loaded | Shape: %s | Cols: %s | First 3 %s: %s", df_ext.shape, list(df_ext.columns), ext_key_col, df_ext.get(ext_key_col, pd.Series(dtype=str)).head(3).tolist())
     except Exception as e: logger.error("Extracted Invoice load failed: %s", e); raise
@@ -172,6 +174,7 @@ def perform_comparison(master_path: str, item_path: str, ext_path: str, status_c
         'Part Number': 'Mat. NO.',
         'Part No.': 'Mat. NO.',
         'Article No': 'Mat. NO.',
+        'Your Reference': 'Mat. NO.',
         'COO': 'Country of Origin',
         'Country Code': 'Country of Origin',
         'QUANTITY': 'Quantity',
@@ -197,8 +200,8 @@ def perform_comparison(master_path: str, item_path: str, ext_path: str, status_c
     ext_req = ['Invoice Number','Invoice Date','Country of Origin','Mat. NO.','Description','Quantity','Total Price']
 
     validate_columns(df_master, master_req, "Master Sheet", "Master Sheet")
-    validate_columns(df_item, item_req, "Item Report", "Sheet1")
-    validate_columns(df_ext, ext_req, "Extracted Invoice", "Sheet1")
+    validate_columns(df_item, item_req, "Item Report", "First Sheet")
+    validate_columns(df_ext, ext_req, "Extracted Invoice", "First Sheet")
     logger.info("Column validation passed. Master=%d rows, Item=%d rows, Invoice=%d rows", len(df_master), len(df_item), len(df_ext))
     if status_callback: status_callback(f"Normalizing data ({len(df_item) + len(df_ext)} rows)...")
 
@@ -265,13 +268,22 @@ def perform_comparison(master_path: str, item_path: str, ext_path: str, status_c
     mismatches: list[dict] = []
     cth_alerts: list[dict] = []
 
-    def add(rd, field, m_val, e_val, i_val, remark, status="MISMATCH", sub_row=False, target_list=None):
+    def add(rd, field, m_val, e_val, i_val, remark, status="MISMATCH", sub_row=False, target_list=None, inv_cth="", item_cth="", inv_desc="", item_desc=""):
         if target_list is None: target_list = mismatches
         def clean_inv(v):
             if pd.isna(v) or v == "": return ""
             s = str(v).strip()
             if s.endswith('.0'): s = s[:-2]
             return s
+
+        # Append row context to remarks
+        r_item = rd.get('excel_row_item')
+        r_ext = rd.get('excel_row_ext')
+        row_info = []
+        if pd.notna(r_item) and r_item != "": row_info.append(f"Item Row: {int(r_item)}")
+        if pd.notna(r_ext) and r_ext != "": row_info.append(f"Inv Row: {int(r_ext)}")
+        if row_info:
+            remark = f"{remark} [{', '.join(row_info)}]"
 
         rec = {
             'Job No': rd.get('Job No','') if not sub_row else '', 
@@ -281,7 +293,10 @@ def perform_comparison(master_path: str, item_path: str, ext_path: str, status_c
             'Model': rd.get('Model', rd.get('Mat. NO.','')) if not sub_row else '',
             'Status': status,
             'Mismatch Field': field, 'Master Sheet Value': m_val,
-            'Extracted Invoice Value': e_val, 'Item Report Value': i_val, 'Remarks': remark
+            'Extracted Invoice Value': e_val, 'Item Report Value': i_val,
+            'Invoice CTH': inv_cth, 'Item CTH': item_cth,
+            'Invoice Desc': inv_desc, 'Item Desc': item_desc,
+            'Remarks': remark
         }
         if not sub_row:
             if pd.isna(rec['Invoice No']) or rec['Invoice No'] == '': rec['Invoice No'] = clean_inv(rd.get('Invoice Number',''))
@@ -324,45 +339,26 @@ def perform_comparison(master_path: str, item_path: str, ext_path: str, status_c
 
         # Master presence
         if pd.isna(row.get('PartNo')) and mk != "":
+            ext_cth = str(row.get('HS Code', '')).strip()
+            item_cth = str(row.get('CTH', '')).strip()
+            if ext_cth.endswith('.0'): ext_cth = ext_cth[:-2]
+            if item_cth.endswith('.0'): item_cth = item_cth[:-2]
+            
+            ext_desc = str(row.get('Description_x', '')).strip()
+            item_desc = str(row.get('Product Desc', '')).strip()
+            
             add(
                 row,
                 'Master Reference',
                 '',
                 row.get('Mat. NO.', ''),
                 row.get('Model', ''),
-                'Model missing in Master Sheet'
+                'Model missing in Master Sheet',
+                inv_cth=ext_cth,
+                item_cth=item_cth,
+                inv_desc=ext_desc,
+                item_desc=item_desc
             )
-
-            # Show HS/CTH subrow only when invoice row exists
-            if ms == 'both':
-                ext_cth = str(row.get('HS Code', '')).strip()
-                item_cth = str(row.get('CTH', '')).strip()
-
-                if ext_cth.endswith('.0'):
-                    ext_cth = ext_cth[:-2]
-                if item_cth.endswith('.0'):
-                    item_cth = item_cth[:-2]
-
-                e2 = first_two_hs(ext_cth)
-                i2 = first_two_hs(item_cth)
-
-                if e2 and i2 and e2 == i2:
-                    hs_remark = "CTH Match"
-                    st = "CTH Check"
-                else:
-                    hs_remark = "CTH Mismatch"
-                    st = "MISMATCH"
-
-                add(
-                    row,
-                    '',
-                    '',
-                    ext_cth,
-                    item_cth,
-                    hs_remark,
-                    status=st,
-                    sub_row=True
-                )
 
         elif row.get('Master_Conflict') == True:
             add(
@@ -484,7 +480,34 @@ def perform_comparison(master_path: str, item_path: str, ext_path: str, status_c
                 )
 
     mismatches.extend(cth_alerts)
-    logger.info("Comparison complete. %d mismatch(es) found.", len(mismatches))
+    
+    unique_jobs = []
+    if 'Job No' in df_item.columns:
+        unique_jobs = df_item['Job No'].dropna().astype(str).unique().tolist()
+        unique_jobs = [j for j in unique_jobs if j.strip() != '']
+
+    actual_mismatches = [m for m in mismatches if m.get('Status') not in ('CTH_ALERT', 'INFO')]
+    if not actual_mismatches:
+        for job in unique_jobs:
+            mismatches.append({
+                'Job No': job,
+                'Job Date': '',
+                'Invoice No': '',
+                'Invoice Date': '',
+                'Model': '',
+                'Status': 'INFO',
+                'Mismatch Field': 'Success',
+                'Master Sheet Value': '',
+                'Extracted Invoice Value': '',
+                'Item Report Value': '',
+                'Invoice CTH': '',
+                'Item CTH': '',
+                'Invoice Desc': '',
+                'Item Desc': '',
+                'Remarks': 'Successfully verified. No mismatches found.'
+            })
+
+    logger.info("Comparison complete. %d mismatch(es) found.", len(actual_mismatches))
     
     # Calculate summary counts using the merge indicator directly.
     # 'both' = row exists in both Item Report and Invoice (matched pair).
@@ -508,7 +531,15 @@ def perform_comparison(master_path: str, item_path: str, ext_path: str, status_c
 
 def export_to_excel(df_out: pd.DataFrame, save_path: str) -> None:
     """Write mismatch DataFrame to a formatted Excel file."""
-    from openpyxl.styles import Alignment
+    from openpyxl.styles import Alignment, Border, Side
+    
+    thin_border = Border(
+        left=Side(style='thin'),
+        right=Side(style='thin'),
+        top=Side(style='thin'),
+        bottom=Side(style='thin')
+    )
+    
     df_exp = df_out.copy()
     
     if 'Status' in df_exp.columns:
@@ -531,7 +562,8 @@ def export_to_excel(df_out: pd.DataFrame, save_path: str) -> None:
     ws.append(list(df_exp.columns))
     for cell in ws[1]: 
         cell.font = hdr_font; cell.fill = hdr_fill
-        cell.alignment = Alignment(horizontal='center')
+        cell.alignment = Alignment(horizontal='center', vertical='center', wrap_text=True)
+        cell.border = thin_border
     
     ws.freeze_panes = 'A2'
 
@@ -541,7 +573,8 @@ def export_to_excel(df_out: pd.DataFrame, save_path: str) -> None:
         
         for c in range(1, len(row_vals)+1):
             cell = ws.cell(row=r_idx, column=c)
-            cell.alignment = Alignment(horizontal='center')
+            cell.alignment = Alignment(horizontal='center', vertical='center', wrap_text=True)
+            cell.border = thin_border
             if status == "MISMATCH":
                 cell.fill = mismatch_fill
             if c in bold_cols_idx:
@@ -549,7 +582,11 @@ def export_to_excel(df_out: pd.DataFrame, save_path: str) -> None:
 
     for col_cells in ws.columns:
         mx = max(len(str(c.value or '')) for c in col_cells)
-        ws.column_dimensions[col_cells[0].column_letter].width = min(mx+2, 50)
+        ws.column_dimensions[col_cells[0].column_letter].width = min(mx+2, 120)
+
+    # Add AutoFilter to all columns
+    ws.auto_filter.ref = ws.dimensions
+
     wb.save(save_path)
 
 
@@ -724,19 +761,20 @@ class Application:
                 self._clear_table()
             else:
                 if 'Status' in self.df_result.columns:
-                    mismatch_count = len(self.df_result[self.df_result['Status'] != 'CTH_ALERT'])
+                    mismatch_count = len(self.df_result[~self.df_result['Status'].isin(['CTH_ALERT', 'INFO'])])
                 else:
                     mismatch_count = len(self.df_result)
                 
                 if mismatch_count == 0:
                     self._show_summary(f"{summary_msg}. No mismatches found!", "#E8F5E9", "#2E7D32")
                     self._set_status("All matched — 0 mismatches", "#2E7D32")
+                    self.btn_export.configure(state=tk.DISABLED)
                 else:
                     self._show_summary(f"{summary_msg} | ⚠ {mismatch_count} mismatch(es) found.", "#FFF8E1", "#F57F17")
                     self._set_status(f"{mismatch_count} mismatch(es) found", _ACCENT_RED)
+                    self.btn_export.configure(state=tk.NORMAL)
                 
                 self._render_table()
-                self.btn_export.configure(state=tk.NORMAL)
         except Exception as e:
             logger.error("Comparison failed: %s\n%s", e, traceback.format_exc())
             messagebox.showerror("Error", f"{e}\n\nSee mismatch_checker.log for details.")
@@ -787,7 +825,10 @@ class Application:
 
         col_widths = {'Job No':90,'Job Date':90,'Invoice No':120,'Invoice Date':100,'Model':140,
                       'Mismatch Field':140,'Master Sheet Value':160,
-                      'Extracted Invoice Value':180,'Item Report Value':160,'Remarks':350}
+                      'Extracted Invoice Value':180,'Item Report Value':160,
+                      'Invoice CTH': 100, 'Item CTH': 100,
+                      'Invoice Desc': 180, 'Item Desc': 180,
+                      'Remarks':350}
         
         for c in display_cols:
             if c == 'Remarks':
@@ -881,9 +922,11 @@ class Application:
                                                   filetypes=[("Excel","*.xlsx")])
         if not save_path: return
         try:
+            import os
             export_to_excel(self.df_result, save_path)
-            messagebox.showinfo("Success", f"Report saved to:\n{save_path}")
             self._set_status("Exported successfully", "#2E7D32")
+            if messagebox.askyesno("Success", f"Report saved to:\n{save_path}\n\nDo you want to open it now?"):
+                os.startfile(save_path)
         except Exception as e:
             messagebox.showerror("Export Error", str(e))
 

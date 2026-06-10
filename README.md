@@ -81,5 +81,6 @@ The application will be generated in the `dist/` folder.
 
 | Version | Release Date | Key Enhancements & Features |
 | :---: | :---: | :--- |
+| **v2.1** | 2026-06-10 | **Enhanced Missing Master Row:** Consolidated missing master item reporting by adding dedicated columns for Extracted/Item CTH and Descriptions directly in the missing item row.<br>**Improved Export UI:** Export to Excel button auto-disables on zero mismatches. Exported Excel now features AutoFilters, dynamic column widths with text wrap, and explicit cell borders. Added a popup prompt to immediately open the generated file.<br>**Zero-Mismatch Reporting:** The GUI table now explicitly lists the successfully verified Job Numbers when zero mismatches are detected. |
 | **v2.0** | 2026-05-19 | **Advanced Logging:** Real-time log rotation (5MB cap) for file fingerprints and per-field match tracebacks.<br>**Audit Trails:** Added tracking for unmatched column aliases and dropped blank rows.<br>**Verbose Mode:** Added `VERBOSE_LOG` constant for deep trace debugging. |
 | **v1.1** | 2026-05-16 | **Format Support:** Added header mapping for VW/Audi and Premium Sound Solutions invoices.<br>**Data Normalization:** Refined country extraction logic (e.g., Taiwan aliases). |

@@ -23,10 +23,13 @@ The **SKODA Item Mismatch Checker** is an automated desktop audit application de
 4. **Execute Reconciliation**: Click the bright red **▶ Run** button. The button will shift to a dark red **⌛ Processing...** state while compiling your audit.
 5. **Review Results**: Scroll through the Data Preview table to audit the discrepancies.
    - **Light Red (`#FFEBEE`) rows** denote active `MISMATCH` errors (e.g., mismatched CTHs, description differences, quantity or pricing issues).
-   - **White (`#FFFFFF`) rows** denote `INFO` items (e.g., "CTH Match" warnings confirming that the chapter-level first 2 digits match even if master data is missing).
+   - **White (`#FFFFFF`) rows** denote `INFO` items. When zero mismatches are found, the table will populate with white rows listing every successfully verified **Job Number**.
+   - *Note on Missing Master Items:* If a part is missing in the Master Sheet, the row will now automatically pull the CTH codes and Descriptions from both the Extracted Invoice and Item Report into dedicated side-by-side columns.
    - *Tip: The table columns are sized dynamically according to text length, allowing you to read all Remarks in full. You can also double-click on any cell to edit its value directly within the table before exporting!*
 6. **Export Findings**: Click the **💾 Export Excel** button to download a formatted spreadsheet of the results. 
-   - *Note: The export dialogue will automatically suggest a filename appended with a dynamic date and time stamp (e.g., `comparison_mismatch_report_20260518_112850.xlsx`) to prevent file overwrite.*
+   - *Note: This button will be automatically disabled if there are zero mismatches to export.*
+   - The exported Excel file includes **AutoFilters**, explicit cell borders, and dynamically sized columns with text wrapping so no descriptions are cut off.
+   - *After exporting, a popup will ask if you want to immediately open the Excel file for review.*
 7. **Reset Application**: Click the gray **🔄 Clear All** button to safely clear the active memory, reset all file paths, and prepare the interface for the next audit.
 
 ---
