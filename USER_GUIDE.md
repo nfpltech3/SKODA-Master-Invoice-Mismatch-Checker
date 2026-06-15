@@ -14,11 +14,11 @@ The **SKODA Item Mismatch Checker** is an automated desktop audit application de
 
 ### 2. The Workflow (Step-by-Step)
 1. **Load Master Sheet**: Click the **📂 Master Sheet** button and select your SKODA Master file.
-   - *Constraint: The spreadsheet must contain a sheet named exactly `Master Sheet` with columns `PartNo`, `CTH1`, `Part Suffix`, `Basic Duty Rate`, `IGST Notn Sr No`, and `Description`.*
+   - *Constraint: The spreadsheet must contain a sheet named exactly `Master Sheet` with columns `PartNo`, `CTH1`, `Basic Duty Rate`, `IGST Notn Sr No`.*
 2. **Load Item Report**: Click the **📂 Item Report** button and select your internal Item Report file.
-   - *Constraint: The data must reside in a sheet named `Sheet1` with columns `Job No`, `Job Date`, `Invoice No`, `Invoice Date`, `Model`, `Amount`, `CTH`, `Generic Description`, `IGST Notification SrNo`, and `Product Desc`.*
+   - *Constraint: The data must reside in a sheet with columns `Job No`, `Job Date`, `Invoice No`, `Invoice Date`, `Model`, `Amount`, `CTH`, `IGST Notification SrNo`, `Product Desc`, `Quantity`, `Country of Origin`, and `Unit`.*
 3. **Load Extracted Invoice**: Click the **📂 Extracted Invoice** button and select the invoice extraction file.
-   - *Constraint: The file must have a sheet named `Sheet1` containing core fields such as `Invoice Number`, `Invoice Date`, `Mat. NO.`, `Country of Origin`, `Quantity`, `Total Price`, and `HS Code`. The tool automatically handles alternative column headers (e.g., `Part Number`, `COO`, `Qty`, `HS-CODE`, `VALUE OF GOODS`).*
+   - *Constraint: The file must have a sheet containing core fields such as `Invoice Number`, `Invoice Date`, `Mat. NO.`, `Country of Origin`, `Quantity`, `Total Price`, `Description`, and `Price per PC`. The tool automatically handles alternative column headers (e.g., `Part Number`, `COO`, `Qty`, `HS-CODE`, `VALUE OF GOODS`).*
    - *Note: The **▶ Run** button will remain grayed out and unclickable until all three files are successfully uploaded.*
 4. **Execute Reconciliation**: Click the bright red **▶ Run** button. The button will shift to a dark red **⌛ Processing...** state while compiling your audit.
 5. **Review Results**: Scroll through the Data Preview table to audit the discrepancies.
@@ -38,13 +38,42 @@ The **SKODA Item Mismatch Checker** is an automated desktop audit application de
 
 | Control / Input | Description | Expected Format / Constraint |
 | :--- | :--- | :--- |
-| **📂 Master Sheet** | Opens selection window for the SKODA Master database. | `.xlsx` or `.xls` containing `Master Sheet` sheet |
-| **📂 Item Report** | Opens selection window for the internal customs report. | `.xlsx` or `.xls` containing `Sheet1` sheet |
-| **📂 Extracted Invoice** | Opens selection window for the parser-extracted invoice. | `.xlsx` or `.xls` containing `Sheet1` sheet |
+| **📂 Master Sheet** | Opens selection window for the SKODA Master database. | `.xlsx`, `.xls`, or `.csv` containing `Master Sheet` sheet |
+| **📂 Item Report** | Opens selection window for the internal customs report. | `.xlsx`, `.xls`, or `.csv` containing `Sheet1` sheet |
+| **📂 Extracted Invoice** | Opens selection window for the parser-extracted invoice. | `.xlsx`, `.xls`, or `.csv` containing `Sheet1` sheet |
 | **▶ Run** | Begins the comparison engine. Muted gray when locked, bright red when active. | Enabled only after all 3 files are successfully loaded |
 | **💾 Export Excel** | Saves the modified mismatch list to an styled Excel spreadsheet. | Generates formatted `.xlsx` with bold values and red highlights |
 | **🔄 Clear All** | Wipes the current session data, file paths, and clears the table. | Resets the GUI to its clean, initial startup state |
 | **Data Preview Grid** | Renders mismatches side-by-side. Supports double-click inline edits. | Segoe UI 10 font, styled color tags based on `Status` |
+
+---
+
+## What is Compared?
+
+The comparison engine executes a strict set of checks across all three files:
+
+### 1. Structural Alignment
+The tool groups all items by their Part Number and ensures the exact number of rows align 1-to-1 between the Item Report and the Extracted Invoice.
+- If a part appears more times in one file than the other, it flags a **Duplicate Occurrence**.
+- If a part is entirely absent from one file, it is flagged as missing.
+- If a part is not found in the Master Sheet, it is flagged under **Master Reference**.
+
+### 2. Master Sheet vs. Item Report
+For every matched part, the tool validates customs reference data:
+- **CTH Code:** Master `CTH1` vs. Item `CTH`
+- **Basic Duty Rate**
+- **IGST Notification SrNo**
+- **Generic Description:** Master `Part Suffix` vs. Item `Generic Description`
+
+### 3. Extracted Invoice vs. Item Report
+The tool normalizes formats (stripping symbols, converting aliases like 'TW' to 'TAIWAN', and formatting dates) before comparing:
+- **Description:** Normalized Invoice Description vs. Item `Product Desc`
+- **Invoice Number**
+- **Invoice Date**
+- **Country of Origin**
+- **Quantity**
+- **Price / Amount:** Invoice `Total Price` vs. Item `Amount`
+- **Unit:** Normalizes Invoice price suffixes (e.g., `/PC`, `/KG`) to match Item Report units (`PCS`, `KGS`).
 
 ---
 

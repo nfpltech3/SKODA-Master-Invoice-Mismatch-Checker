@@ -40,6 +40,7 @@ The tool then compares the physical invoice data against the Item Report data (a
 | **Country of Origin** <br>*(Invoice `Country of Origin` vs. Item `Country of Origin`)* | `Country of Origin` | `"Country of Origin mismatch"` |
 | **Quantity** <br>*(Invoice `Quantity` vs. Item `Quantity`)* | `Quantity` | `"Quantity mismatch"` |
 | **Price / Amount** <br>*(Invoice `Total Price` vs. Item `Amount`)* | `Amount` | `"Amount & Total Price mismatch"` |
+| **Unit** <br>*(Invoice `Price per PC` suffix vs. Item `Unit`)* | `Unit` | `"Unit does not match in Item Report & Invoice"` |
 
 ---
 

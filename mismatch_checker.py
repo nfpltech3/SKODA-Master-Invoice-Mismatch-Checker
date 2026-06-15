@@ -138,6 +138,19 @@ def normalize_description(val, model="", generic_desc="") -> str:
     v = re.sub(r'[^\w\s]', '', v)
     return re.sub(r'\s+', ' ', v).strip()
 
+def normalize_unit(ext_price_per_pc: str) -> str:
+    """Extract unit from Price per PC (e.g. '100 /PC' -> 'PCS', '100 /G' -> 'GMS', '100 /L' -> 'LTR')"""
+    if pd.isna(ext_price_per_pc) or ext_price_per_pc == "": return ""
+    s = str(ext_price_per_pc).upper().strip()
+    if '/' not in s:
+        return ""
+    unit_part = s.split('/')[-1].strip().replace(" ", "")
+    if unit_part == 'PC': return 'PCS'
+    if unit_part == 'G': return 'GMS'
+    if unit_part == 'L': return 'LTR'
+    if unit_part == 'KG': return 'KGS'
+    return unit_part
+
 # ═══════════════════════════════════════════════════════════════
 # COMPARISON LOGIC
 # ═══════════════════════════════════════════════════════════════
@@ -147,22 +160,32 @@ def validate_columns(df, required_cols: list[str], file_name: str, sheet_name: s
     if missing:
         raise ValueError(f"Missing required columns in {file_name} / {sheet_name}:\n" + "\n".join(f"- {m}" for m in missing))
 
+def load_dataframe(path: str, sheet_name=0, dtype=None) -> pd.DataFrame:
+    """Helper to load either Excel or CSV transparently."""
+    p = str(path).lower()
+    if p.endswith('.csv'):
+        try:
+            return pd.read_csv(path, dtype=dtype, encoding='utf-8-sig')
+        except UnicodeDecodeError:
+            return pd.read_csv(path, dtype=dtype, encoding='latin1')
+    return pd.read_excel(path, sheet_name=sheet_name, dtype=dtype)
+
 def perform_comparison(master_path: str, item_path: str, ext_path: str, status_callback=None) -> dict:
     """Run comparison and return dict with mismatch DF and summary counts."""
-    if status_callback: status_callback("Loading Excel files...")
+    if status_callback: status_callback("Loading files...")
     logger.info("Starting comparison...")
     logger.info("Master: %s | Item: %s | Invoice: %s", master_path, item_path, ext_path)
     try: 
-        df_master = pd.read_excel(master_path, sheet_name="Master Sheet", dtype=str)
+        df_master = load_dataframe(master_path, sheet_name="Master Sheet", dtype=str)
         logger.info("Master Sheet loaded | Shape: %s | Cols: %s | First 3 PartNo: %s", df_master.shape, list(df_master.columns), df_master.get('PartNo', pd.Series(dtype=str)).head(3).tolist())
     except Exception as e: logger.error("Master Sheet load failed: %s", e); raise
     try: 
-        df_item = pd.read_excel(item_path, sheet_name=0)
+        df_item = load_dataframe(item_path, sheet_name=0)
         df_item['excel_row_item'] = df_item.index + 2
         logger.info("Item Report loaded | Shape: %s | Cols: %s | First 3 Model: %s", df_item.shape, list(df_item.columns), df_item.get('Model', pd.Series(dtype=str)).head(3).tolist())
     except Exception as e: logger.error("Item Report load failed: %s", e); raise
     try: 
-        df_ext = pd.read_excel(ext_path, sheet_name=0)
+        df_ext = load_dataframe(ext_path, sheet_name=0)
         df_ext['excel_row_ext'] = df_ext.index + 2
         ext_key_col = 'Mat. NO.' if 'Mat. NO.' in df_ext.columns else 'Part Number' if 'Part Number' in df_ext.columns else df_ext.columns[0]
         logger.info("Extracted Invoice loaded | Shape: %s | Cols: %s | First 3 %s: %s", df_ext.shape, list(df_ext.columns), ext_key_col, df_ext.get(ext_key_col, pd.Series(dtype=str)).head(3).tolist())
@@ -196,8 +219,8 @@ def perform_comparison(master_path: str, item_path: str, ext_path: str, status_c
     logger.info("Column aliases attempted but did not match: %s", unmatched_aliases)
 
     master_req = ['PartNo', 'CTH1', 'Basic Duty Rate', 'IGST Notn Sr No']
-    item_req = ['Job No','Job Date','Invoice No','Invoice Date','Model','Product Desc','CTH','Quantity','Amount','Country of Origin','Basic Duty Rate','IGST Notification SrNo']
-    ext_req = ['Invoice Number','Invoice Date','Country of Origin','Mat. NO.','Description','Quantity','Total Price']
+    item_req = ['Job No','Job Date','Invoice No','Invoice Date','Model','Product Desc','CTH','Quantity','Amount','Country of Origin','Basic Duty Rate','IGST Notification SrNo', 'Unit']
+    ext_req = ['Invoice Number','Invoice Date','Country of Origin','Mat. NO.','Description','Quantity','Total Price', 'Price per PC']
 
     validate_columns(df_master, master_req, "Master Sheet", "Master Sheet")
     validate_columns(df_item, item_req, "Item Report", "First Sheet")
@@ -458,6 +481,16 @@ def perform_comparison(master_path: str, item_path: str, ext_path: str, status_c
             if norm_ext_amt != norm_item_amt:
                 logger.debug("Mismatch [Amount] key: %s | Raw Ext: %r, Item: %r | Norm Ext: %r, Item: %r", mk, raw_ext_amt, raw_item_amt, norm_ext_amt, norm_item_amt)
                 add(row, 'Amount', '', raw_ext_amt, raw_item_amt, 'Amount & Total Price mismatch')
+                
+            # Unit vs Price per PC check
+            raw_ext_price_pc = row.get('Price per PC_ext', row.get('Price per PC', ''))
+            raw_item_unit = row.get('Unit_item', row.get('Unit', ''))
+            norm_ext_unit = normalize_unit(raw_ext_price_pc)
+            norm_item_unit = str(raw_item_unit).upper().strip() if pd.notna(raw_item_unit) and str(raw_item_unit).strip() else ""
+            
+            if norm_ext_unit and norm_item_unit and norm_ext_unit != norm_item_unit:
+                logger.debug("Mismatch [Unit] key: %s | Raw Ext: %r, Item: %r | Norm Ext: %r, Item: %r", mk, raw_ext_price_pc, raw_item_unit, norm_ext_unit, norm_item_unit)
+                add(row, 'Unit', '', raw_ext_price_pc, raw_item_unit, 'Unit does not match in Item Report & Invoice')
 
         # Check for CTH Alerts
         if ms in ('both', 'left_only'):
@@ -719,7 +752,7 @@ class Application:
 
     # ── File pickers ───────────────────────────────────────────
     def _pick_master(self) -> None:
-        p = filedialog.askopenfilename(title="Select Master Sheet", filetypes=[("Excel","*.xlsx *.xls")])
+        p = filedialog.askopenfilename(title="Select Master Sheet", filetypes=[("Data Files","*.xlsx *.xls *.csv")])
         if p:
             self.master_path = p
             self.btn_master.configure(text=f"✅ {Path(p).name[:30]}")
@@ -727,7 +760,7 @@ class Application:
             self._check_ready()
 
     def _pick_item(self) -> None:
-        p = filedialog.askopenfilename(title="Select Item Report", filetypes=[("Excel","*.xlsx *.xls")])
+        p = filedialog.askopenfilename(title="Select Item Report", filetypes=[("Data Files","*.xlsx *.xls *.csv")])
         if p:
             self.item_path = p
             self.btn_item.configure(text=f"✅ {Path(p).name[:30]}")
@@ -735,7 +768,7 @@ class Application:
             self._check_ready()
 
     def _pick_ext(self) -> None:
-        p = filedialog.askopenfilename(title="Select Extracted Invoice", filetypes=[("Excel","*.xlsx *.xls")])
+        p = filedialog.askopenfilename(title="Select Extracted Invoice", filetypes=[("Data Files","*.xlsx *.xls *.csv")])
         if p:
             self.ext_path = p
             self.btn_ext.configure(text=f"✅ {Path(p).name[:30]}")
