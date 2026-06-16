@@ -16,9 +16,9 @@ The **SKODA Item Mismatch Checker** is an automated desktop audit application de
 1. **Load Master Sheet**: Click the **📂 Master Sheet** button and select your SKODA Master file.
    - *Constraint: The spreadsheet must contain a sheet named exactly `Master Sheet` with columns `PartNo`, `CTH1`, `Basic Duty Rate`, `IGST Notn Sr No`.*
 2. **Load Item Report**: Click the **📂 Item Report** button and select your internal Item Report file.
-   - *Constraint: The data must reside in a sheet with columns `Job No`, `Job Date`, `Invoice No`, `Invoice Date`, `Model`, `Amount`, `CTH`, `IGST Notification SrNo`, `Product Desc`, `Quantity`, `Country of Origin`, and `Unit`.*
+   - *Constraint: The data must reside in a sheet with columns `Job No`, `Job Date`, `Invoice No`, `Invoice Date`, `Model`, `Amount`, `CTH`, `IGST Notification SrNo`, `Product Desc`, `Quantity`, and `Country of Origin`. (The `Unit` column is optional and will be matched if present).*
 3. **Load Extracted Invoice**: Click the **📂 Extracted Invoice** button and select the invoice extraction file.
-   - *Constraint: The file must have a sheet containing core fields such as `Invoice Number`, `Invoice Date`, `Mat. NO.`, `Country of Origin`, `Quantity`, `Total Price`, `Description`, and `Price per PC`. The tool automatically handles alternative column headers (e.g., `Part Number`, `COO`, `Qty`, `HS-CODE`, `VALUE OF GOODS`).*
+   - *Constraint: The file must have a sheet containing core fields such as `Invoice Number`, `Invoice Date`, `Mat. NO.`, `Country of Origin`, `Quantity`, `Total Price`, and `Description`. (The `Price per PC` column is optional and will be matched against Unit if present). The tool automatically handles alternative column headers (e.g., `Part Number`, `COO`, `Qty`, `HS-CODE`, `VALUE OF GOODS`).*
    - *Note: The **▶ Run** button will remain grayed out and unclickable until all three files are successfully uploaded.*
 4. **Execute Reconciliation**: Click the bright red **▶ Run** button. The button will shift to a dark red **⌛ Processing...** state while compiling your audit.
 5. **Review Results**: Scroll through the Data Preview table to audit the discrepancies.

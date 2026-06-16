@@ -219,8 +219,8 @@ def perform_comparison(master_path: str, item_path: str, ext_path: str, status_c
     logger.info("Column aliases attempted but did not match: %s", unmatched_aliases)
 
     master_req = ['PartNo', 'CTH1', 'Basic Duty Rate', 'IGST Notn Sr No']
-    item_req = ['Job No','Job Date','Invoice No','Invoice Date','Model','Product Desc','CTH','Quantity','Amount','Country of Origin','Basic Duty Rate','IGST Notification SrNo', 'Unit']
-    ext_req = ['Invoice Number','Invoice Date','Country of Origin','Mat. NO.','Description','Quantity','Total Price', 'Price per PC']
+    item_req = ['Job No','Job Date','Invoice No','Invoice Date','Model','Product Desc','CTH','Quantity','Amount','Country of Origin','Basic Duty Rate','IGST Notification SrNo']
+    ext_req = ['Invoice Number','Invoice Date','Country of Origin','Mat. NO.','Description','Quantity','Total Price']
 
     validate_columns(df_master, master_req, "Master Sheet", "Master Sheet")
     validate_columns(df_item, item_req, "Item Report", "First Sheet")
