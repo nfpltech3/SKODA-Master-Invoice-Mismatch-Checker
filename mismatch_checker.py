@@ -138,6 +138,15 @@ def normalize_description(val, model="", generic_desc="") -> str:
     v = re.sub(r'[^\w\s]', '', v)
     return re.sub(r'\s+', ' ', v).strip()
 
+def extract_currency(val) -> str:
+    """Extract currency from Amount or Currency column."""
+    if pd.isna(val) or val == "": return ""
+    s = str(val).upper().strip()
+    # Remove digits, commas, periods, hyphens
+    s = re.sub(r'[\d.,-]', '', s).strip()
+    # Replace multiple spaces with single space
+    return re.sub(r'\s+', ' ', s)
+
 def normalize_unit(ext_price_per_pc: str) -> str:
     """Extract unit from Price per PC (e.g. '100 /PC' -> 'PCS', '100 /G' -> 'GMS', '100 /L' -> 'LTR')"""
     if pd.isna(ext_price_per_pc) or ext_price_per_pc == "": return ""
@@ -149,6 +158,7 @@ def normalize_unit(ext_price_per_pc: str) -> str:
     if unit_part == 'G': return 'GMS'
     if unit_part == 'L': return 'LTR'
     if unit_part == 'KG': return 'KGS'
+    if unit_part == 'M': return 'MTR'
     return unit_part
 
 # ═══════════════════════════════════════════════════════════════
@@ -172,6 +182,8 @@ def load_dataframe(path: str, sheet_name=0, dtype=None) -> pd.DataFrame:
 
 def perform_comparison(master_path: str, item_path: str, ext_path: str, status_callback=None) -> dict:
     """Run comparison and return dict with mismatch DF and summary counts."""
+    has_invoice = bool(ext_path)
+
     if status_callback: status_callback("Loading files...")
     logger.info("Starting comparison...")
     logger.info("Master: %s | Item: %s | Invoice: %s", master_path, item_path, ext_path)
@@ -184,39 +196,51 @@ def perform_comparison(master_path: str, item_path: str, ext_path: str, status_c
         df_item['excel_row_item'] = df_item.index + 2
         logger.info("Item Report loaded | Shape: %s | Cols: %s | First 3 Model: %s", df_item.shape, list(df_item.columns), df_item.get('Model', pd.Series(dtype=str)).head(3).tolist())
     except Exception as e: logger.error("Item Report load failed: %s", e); raise
-    try: 
-        df_ext = load_dataframe(ext_path, sheet_name=0)
-        df_ext['excel_row_ext'] = df_ext.index + 2
-        ext_key_col = 'Mat. NO.' if 'Mat. NO.' in df_ext.columns else 'Part Number' if 'Part Number' in df_ext.columns else df_ext.columns[0]
-        logger.info("Extracted Invoice loaded | Shape: %s | Cols: %s | First 3 %s: %s", df_ext.shape, list(df_ext.columns), ext_key_col, df_ext.get(ext_key_col, pd.Series(dtype=str)).head(3).tolist())
-    except Exception as e: logger.error("Extracted Invoice load failed: %s", e); raise
+    
+    if has_invoice:
+        try: 
+            df_ext = load_dataframe(ext_path, sheet_name=0)
+            df_ext['excel_row_ext'] = df_ext.index + 2
+            ext_key_col = 'Mat. NO.' if 'Mat. NO.' in df_ext.columns else 'Part Number' if 'Part Number' in df_ext.columns else df_ext.columns[0]
+            logger.info("Extracted Invoice loaded | Shape: %s | Cols: %s | First 3 %s: %s", df_ext.shape, list(df_ext.columns), ext_key_col, df_ext.get(ext_key_col, pd.Series(dtype=str)).head(3).tolist())
+        except Exception as e: logger.error("Extracted Invoice load failed: %s", e); raise
+    else:
+        df_ext = pd.DataFrame()
 
     # ── Column aliasing for alternate invoice formats ──
     # Canonical names used internally vs alternate names found in different invoice layouts.
     ext_aliases = {
         'Part Number': 'Mat. NO.',
+        'PART NUMBER': 'Mat. NO.',
         'Part No.': 'Mat. NO.',
         'Article No': 'Mat. NO.',
         'Your Reference': 'Mat. NO.',
         'COO': 'Country of Origin',
+        'COUNTRY OF ORIGIN': 'Country of Origin',
         'Country Code': 'Country of Origin',
         'QUANTITY': 'Quantity',
+        'QTY': 'Quantity',
         'Qty': 'Quantity',
         'VALUE OF GOODS': 'Total Price',
+        'EXTENDED PRICE': 'Total Price',
         'Amount': 'Total Price',
         'HS-CODE': 'HS Code',
+        'HARMONISED COMMODITY CODE': 'HS Code',
         'Invoice No': 'Invoice Number',
+        'INVOICE NUMBER': 'Invoice Number',
+        'INVOICE DATE': 'Invoice Date',
+        'PART DESCRIPTION': 'Description',
+        'UNIT PRICE': 'Price per PC',
     }
-    unmatched_aliases = []
-    for alt, canonical in ext_aliases.items():
-        if alt in df_ext.columns and canonical not in df_ext.columns:
-            df_ext.rename(columns={alt: canonical}, inplace=True)
-            logger.info("Aliased Extracted Invoice column '%s' -> '%s'", alt, canonical)
-        elif alt not in df_ext.columns:
-            # Alt name not present in file at all — truly unmatched
-            unmatched_aliases.append(alt)
-        # If canonical already exists, alias is irrelevant — no need to log
-    logger.info("Column aliases attempted but did not match: %s", unmatched_aliases)
+    if has_invoice:
+        unmatched_aliases = []
+        for alt, canonical in ext_aliases.items():
+            if alt in df_ext.columns and canonical not in df_ext.columns:
+                df_ext.rename(columns={alt: canonical}, inplace=True)
+                logger.info("Aliased Extracted Invoice column '%s' -> '%s'", alt, canonical)
+            elif alt not in df_ext.columns:
+                unmatched_aliases.append(alt)
+        logger.info("Column aliases attempted but did not match: %s", unmatched_aliases)
 
     master_req = ['PartNo', 'CTH1', 'Basic Duty Rate', 'IGST Notn Sr No']
     item_req = ['Job No','Job Date','Invoice No','Invoice Date','Model','Product Desc','CTH','Quantity','Amount','Country of Origin','Basic Duty Rate','IGST Notification SrNo']
@@ -224,37 +248,46 @@ def perform_comparison(master_path: str, item_path: str, ext_path: str, status_c
 
     validate_columns(df_master, master_req, "Master Sheet", "Master Sheet")
     validate_columns(df_item, item_req, "Item Report", "First Sheet")
-    validate_columns(df_ext, ext_req, "Extracted Invoice", "First Sheet")
-    logger.info("Column validation passed. Master=%d rows, Item=%d rows, Invoice=%d rows", len(df_master), len(df_item), len(df_ext))
-    if status_callback: status_callback(f"Normalizing data ({len(df_item) + len(df_ext)} rows)...")
+    if has_invoice:
+        validate_columns(df_ext, ext_req, "Extracted Invoice", "First Sheet")
+        logger.info("Column validation passed. Master=%d rows, Item=%d rows, Invoice=%d rows", len(df_master), len(df_item), len(df_ext))
+        if status_callback: status_callback(f"Normalizing data ({len(df_item) + len(df_ext)} rows)...")
+    else:
+        logger.info("Column validation passed. Master=%d rows, Item=%d rows, NO INVOICE", len(df_master), len(df_item))
+        if status_callback: status_callback(f"Normalizing data ({len(df_item)} rows)...")
 
     # Strip unnamed columns from both dataframes
     df_item = df_item[[c for c in df_item.columns if 'Unnamed' not in str(c)]]
-    df_ext = df_ext[[c for c in df_ext.columns if 'Unnamed' not in str(c)]]
+    if has_invoice:
+        df_ext = df_ext[[c for c in df_ext.columns if 'Unnamed' not in str(c)]]
 
     # Filter out summary/blank rows from Extracted Invoice
-    # Rows where Mat. NO. is blank are summary lines (e.g. "Total Unique Packages: 113")
-    before_filter_df = df_ext.copy()
-    df_ext = df_ext.dropna(subset=['Mat. NO.'])
-    df_ext = df_ext[df_ext['Mat. NO.'].astype(str).str.strip() != '']
-    dropped = len(before_filter_df) - len(df_ext)
-    if dropped > 0:
-        dropped_df = before_filter_df[~before_filter_df.index.isin(df_ext.index)]
-        first_3_dropped = dropped_df['Mat. NO.'].head(3).tolist()
-        logger.info("Filtered %d summary/blank rows from Extracted Invoice. First 3 dropped Mat. NO.: %s", dropped, first_3_dropped)
+    if has_invoice:
+        before_filter_df = df_ext.copy()
+        df_ext = df_ext.dropna(subset=['Mat. NO.'])
+        df_ext = df_ext[df_ext['Mat. NO.'].astype(str).str.strip() != '']
+        dropped = len(before_filter_df) - len(df_ext)
+        if dropped > 0:
+            dropped_df = before_filter_df[~before_filter_df.index.isin(df_ext.index)]
+            first_3_dropped = dropped_df['Mat. NO.'].head(3).tolist()
+            logger.info("Filtered %d summary/blank rows from Extracted Invoice. First 3 dropped Mat. NO.: %s", dropped, first_3_dropped)
 
     # Normalize match keys
     df_master['match_key'] = df_master['PartNo'].apply(normalize_part_number)
     df_item['match_key'] = df_item['Model'].apply(normalize_part_number)
-    df_ext['match_key'] = df_ext['Mat. NO.'].apply(normalize_part_number)
-
+    
     mk_master = set(df_master['match_key'].unique())
     mk_item = set(df_item['match_key'].unique())
-    mk_ext = set(df_ext['match_key'].unique())
-    logger.info("Match Keys Unique Counts - Master: %d, Item: %d, Extracted: %d", len(mk_master), len(mk_item), len(mk_ext))
-    logger.info("Match Keys ONLY in Item Report (max 20): %s", list(mk_item - mk_ext)[:20])
-    logger.info("Match Keys ONLY in Extracted Invoice (max 20): %s", list(mk_ext - mk_item)[:20])
-    logger.info("Match Keys missing from BOTH Invoice and Master (max 20): %s", list(mk_item - mk_ext - mk_master)[:20])
+
+    if has_invoice:
+        df_ext['match_key'] = df_ext['Mat. NO.'].apply(normalize_part_number)
+        mk_ext = set(df_ext['match_key'].unique())
+        logger.info("Match Keys Unique Counts - Master: %d, Item: %d, Extracted: %d", len(mk_master), len(mk_item), len(mk_ext))
+        logger.info("Match Keys ONLY in Item Report (max 20): %s", list(mk_item - mk_ext)[:20])
+        logger.info("Match Keys ONLY in Extracted Invoice (max 20): %s", list(mk_ext - mk_item)[:20])
+        logger.info("Match Keys missing from BOTH Invoice and Master (max 20): %s", list(mk_item - mk_ext - mk_master)[:20])
+    else:
+        logger.info("Match Keys Unique Counts - Master: %d, Item: %d", len(mk_master), len(mk_item))
 
     # Master dedup & conflict detection
     master_conflicts = set()
@@ -266,30 +299,56 @@ def perform_comparison(master_path: str, item_path: str, ext_path: str, status_c
 
     # Occurrence index for duplicate handling
     df_item['occurrence'] = df_item.groupby('match_key').cumcount()
-    df_ext['occurrence'] = df_ext.groupby('match_key').cumcount()
     item_counts = df_item['match_key'].value_counts()
-    ext_counts = df_ext['match_key'].value_counts()
+    
+    if has_invoice:
+        df_ext['occurrence'] = df_ext.groupby('match_key').cumcount()
+        ext_counts = df_ext['match_key'].value_counts()
+    else:
+        ext_counts = pd.Series(dtype=int)
 
     # Merge
     if status_callback: status_callback("Merging and identifying mismatches...")
-    logger.info("Merging Item Report (%d) with Extracted Invoice (%d)...", len(df_item), len(df_ext))
-    merged = pd.merge(df_item, df_ext, on=['match_key','occurrence'], how='outer', suffixes=('_item','_ext'), indicator=True)
-    logger.debug("Merged columns: %s", list(merged.columns))
-    
-    merge_counts = merged['_merge'].value_counts().to_dict()
-    logger.info("Merge distribution (_merge counts): %s", merge_counts)
-    
+    if has_invoice:
+        logger.info("Merging Item Report (%d) with Extracted Invoice (%d)...", len(df_item), len(df_ext))
+        merged = pd.merge(df_item, df_ext, on=['match_key','occurrence'], how='outer', suffixes=('_item','_ext'), indicator=True)
+        logger.debug("Merged columns: %s", list(merged.columns))
+        merge_counts = merged['_merge'].value_counts().to_dict()
+        logger.info("Merge distribution (_merge counts): %s", merge_counts)
+    else:
+        logger.info("Skipping Invoice merge (no invoice provided).")
+        merged = df_item.copy()
+        merged['_merge'] = 'left_only'
+
     item_dupes = df_item[df_item['occurrence'] > 0]['match_key'].unique()
-    ext_dupes = df_ext[df_ext['occurrence'] > 0]['match_key'].unique()
     if len(item_dupes) > 0:
         logger.info("Duplicate match keys in Item Report (max 20): %s", list(item_dupes)[:20])
-    if len(ext_dupes) > 0:
-        logger.info("Duplicate match keys in Extracted Invoice (max 20): %s", list(ext_dupes)[:20])
+    if has_invoice:
+        ext_dupes = df_ext[df_ext['occurrence'] > 0]['match_key'].unique()
+        if len(ext_dupes) > 0:
+            logger.info("Duplicate match keys in Extracted Invoice (max 20): %s", list(ext_dupes)[:20])
         
     merged_full = pd.merge(merged, df_master_unique, on='match_key', how='left')
 
     mismatches: list[dict] = []
     cth_alerts: list[dict] = []
+
+    if has_invoice:
+        ext_currency_missing = 'Currency' not in df_ext.columns and 'Currency_ext' not in merged.columns
+        item_has_currency = any(extract_currency(x) != "" for x in df_item['Amount'].dropna())
+        item_currency_missing = not item_has_currency
+        
+        if ext_currency_missing or item_currency_missing:
+            msgs = []
+            if ext_currency_missing: msgs.append("invoice excel")
+            if item_currency_missing: msgs.append("item report")
+            mismatches.append({
+                'Job No': '', 'Job Date': '', 'Invoice No': '', 'Invoice Date': '', 'Model': '',
+                'Status': 'MISMATCH', 'Mismatch Field': 'Currency Missing',
+                'Master Sheet Value': '', 'Extracted Invoice Value': '', 'Item Report Value': '',
+                'Invoice CTH': '', 'Item CTH': '', 'Invoice Desc': '', 'Item Desc': '',
+                'Remarks': f"Currency was not present in the {' and '.join(msgs)}"
+            })
 
     def add(rd, field, m_val, e_val, i_val, remark, status="MISMATCH", sub_row=False, target_list=None, inv_cth="", item_cth="", inv_desc="", item_desc=""):
         if target_list is None: target_list = mismatches
@@ -332,33 +391,31 @@ def perform_comparison(master_path: str, item_path: str, ext_path: str, status_c
 
         # Missing in both Invoice and Master — single combined row
         if ms == 'left_only' and pd.isna(row.get('PartNo')) and mk != "":
-            add(
-                row,
-                'Model',
-                '',
-                '',
-                row.get('Model', ''),
-                'Model found in Item Report but missing in both Extracted Invoice and Master Sheet'
-            )
+            if has_invoice:
+                rmk = 'Model found in Item Report but missing in both Extracted Invoice and Master Sheet'
+            else:
+                rmk = 'Model found in Item Report but missing in Master Sheet'
+            add(row, 'Model', '', '', row.get('Model', ''), rmk)
             continue
 
         # Missing / Duplicate count
-        if ms == 'left_only':
-            if mk in ext_counts.index:
-                i_count = item_counts.get(mk, 0)
-                e_count = ext_counts.get(mk, 0)
-                rmk = f'Item Report contains {i_count} row(s) for this Model, but Extracted Invoice contains only {e_count} row(s).'
-            else:
-                rmk = 'Model found in Item Report but missing in Extracted Invoice'
-            add(row, 'Duplicate Occurrence', '', '', row['Model'], rmk)
-        elif ms == 'right_only':
-            if mk in item_counts.index:
-                i_count = item_counts.get(mk, 0)
-                e_count = ext_counts.get(mk, 0)
-                rmk = f'Extracted Invoice contains {e_count} row(s) for this Model, but Item Report contains only {i_count} row(s).'
-            else:
-                rmk = 'Model found in Extracted Invoice but missing in Item Report'
-            add(row, 'Duplicate Occurrence', '', row['Mat. NO.'], '', rmk)
+        if has_invoice:
+            if ms == 'left_only':
+                if mk in ext_counts.index:
+                    i_count = item_counts.get(mk, 0)
+                    e_count = ext_counts.get(mk, 0)
+                    rmk = f'Item Report contains {i_count} row(s) for this Model, but Extracted Invoice contains only {e_count} row(s).'
+                else:
+                    rmk = 'Model found in Item Report but missing in Extracted Invoice'
+                add(row, 'Duplicate Occurrence', '', '', row['Model'], rmk)
+            elif ms == 'right_only':
+                if mk in item_counts.index:
+                    i_count = item_counts.get(mk, 0)
+                    e_count = ext_counts.get(mk, 0)
+                    rmk = f'Extracted Invoice contains {e_count} row(s) for this Model, but Item Report contains only {i_count} row(s).'
+                else:
+                    rmk = 'Model found in Extracted Invoice but missing in Item Report'
+                add(row, 'Duplicate Occurrence', '', row['Mat. NO.'], '', rmk)
 
         # Master presence
         if pd.isna(row.get('PartNo')) and mk != "":
@@ -431,8 +488,8 @@ def perform_comparison(master_path: str, item_path: str, ext_path: str, status_c
             generic_desc_val = row.get('Generic Description', '')
             # Master Sheet description for this part (Description_y after joining master)
             master_desc_raw = row.get('Description_y', '')
-            # Extracted Invoice description (Description_x after outer merge with _ext suffix not applied since Item Report has no Description col)
-            ext_desc_raw = row.get('Description_x', '')
+            # Extracted Invoice description safely fall back to Description if _x doesn't exist
+            ext_desc_raw = row.get('Description_x', row.get('Description', ''))
             # Item Report description
             item_desc_raw = row.get('Product Desc', '')
 
@@ -481,6 +538,14 @@ def perform_comparison(master_path: str, item_path: str, ext_path: str, status_c
             if norm_ext_amt != norm_item_amt:
                 logger.debug("Mismatch [Amount] key: %s | Raw Ext: %r, Item: %r | Norm Ext: %r, Item: %r", mk, raw_ext_amt, raw_item_amt, norm_ext_amt, norm_item_amt)
                 add(row, 'Amount', '', raw_ext_amt, raw_item_amt, 'Amount & Total Price mismatch')
+                
+            # Currency check
+            raw_ext_currency = row.get('Currency_ext', row.get('Currency', ''))
+            norm_ext_currency = extract_currency(raw_ext_currency)
+            norm_item_currency = extract_currency(raw_item_amt)
+            if norm_ext_currency and norm_item_currency and norm_ext_currency != norm_item_currency:
+                logger.debug("Mismatch [Currency] key: %s | Raw Ext: %r, Item: %r | Norm Ext: %r, Item: %r", mk, raw_ext_currency, raw_item_amt, norm_ext_currency, norm_item_currency)
+                add(row, 'Currency', '', raw_ext_currency, raw_item_amt, 'Currency does not match in Item Report & Invoice')
                 
             # Unit vs Price per PC check
             raw_ext_price_pc = row.get('Price per PC_ext', row.get('Price per PC', ''))
@@ -540,12 +605,6 @@ def perform_comparison(master_path: str, item_path: str, ext_path: str, status_c
                 'Remarks': 'Successfully verified. No mismatches found.'
             })
 
-    logger.info("Comparison complete. %d mismatch(es) found.", len(actual_mismatches))
-    
-    # Calculate summary counts using the merge indicator directly.
-    # 'both' = row exists in both Item Report and Invoice (matched pair).
-    # 'left_only' = in Item Report but not Invoice.
-    # 'right_only' = in Invoice but not Item Report.
     merge_counts = merged['_merge'].value_counts()
     both_count = merge_counts.get('both', 0)
     
@@ -556,9 +615,10 @@ def perform_comparison(master_path: str, item_path: str, ext_path: str, status_c
     return {
         'df': pd.DataFrame(mismatches),
         'item_total': len(df_item),
-        'ext_total': len(df_ext),
-        'item_matched': matched_item_count,
-        'ext_matched': matched_ext_count
+        'ext_total': len(df_ext) if has_invoice else 0,
+        'item_matched': matched_item_count if has_invoice else len(df_item),
+        'ext_matched': matched_ext_count if has_invoice else 0,
+        'has_invoice': has_invoice
     }
 
 
@@ -743,10 +803,13 @@ class Application:
         self.status_var.set(text); self.status_lbl.configure(fg=color); self.root.update_idletasks()
 
     def _check_ready(self) -> None:
-        """Enable/disable Run button based on whether all 3 files are selected."""
-        if self.master_path and self.item_path and self.ext_path:
+        """Enable/disable Run button based on whether required files are selected."""
+        if self.master_path and self.item_path:
             self.btn_run.configure(state=tk.NORMAL, bg=_ACCENT_RED)
-            self._set_status("All files selected — click Run")
+            if self.ext_path:
+                self._set_status("All files selected — click Run")
+            else:
+                self._set_status("Master & Item Report selected — click Run (Invoice Optional)")
         else:
             self.btn_run.configure(state=tk.DISABLED, bg="#A0AAB5")
 
@@ -778,6 +841,10 @@ class Application:
     # ── Run comparison ─────────────────────────────────────────
     def _run(self) -> None:
         """Run comparison with visual processing feedback."""
+        if not self.ext_path:
+            if not messagebox.askyesno("Missing Invoice", "You have not selected an Extracted Invoice.\n\nDo you want to run the comparison using only the Master Sheet and Item Report?"):
+                return
+                
         self.btn_run.configure(state=tk.DISABLED, text="⌛ Processing...", bg="#9e191e")
         self.btn_export.configure(state=tk.DISABLED)
         self.root.update()
@@ -786,7 +853,10 @@ class Application:
             res = perform_comparison(self.master_path, self.item_path, self.ext_path)
             self.df_result = res['df']
             
-            summary_msg = f"✅ Success! Matched: Item {res['item_matched']}/{res['item_total']} | Inv {res['ext_matched']}/{res['ext_total']}"
+            if res['has_invoice']:
+                summary_msg = f"✅ Success! Matched: Item {res['item_matched']}/{res['item_total']} | Inv {res['ext_matched']}/{res['ext_total']}"
+            else:
+                summary_msg = f"✅ Success! Processed {res['item_total']} items (Invoice check skipped)"
             
             if self.df_result is None or self.df_result.empty:
                 self._show_summary(f"{summary_msg}. No mismatches found!", "#E8F5E9", "#2E7D32")
